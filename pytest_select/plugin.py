@@ -1,3 +1,4 @@
+import fnmatch
 import warnings
 from pathlib import Path
 
@@ -11,7 +12,8 @@ class PytestSelectWarning(PytestWarning):
 
 def pytest_addoption(parser):
     select_group = parser.getgroup(
-        "select", "Modify the list of collected tests."  # pragma: no mutate  # pragma: no mutate
+        "select",
+        "Modify the list of collected tests.",  # pragma: no mutate  # pragma: no mutate
     )
     select_group.addoption(
         "--select-from-file",
@@ -45,7 +47,10 @@ def pytest_report_header(config):
 
     fail_on_missing = config.getoption("selectfailonmissing")
 
-    for option_name, selecting in [("selectfromfile", True), ("deselectfromfile", False)]:
+    for option_name, selecting in [
+        ("selectfromfile", True),
+        ("deselectfromfile", False),
+    ]:
         option_value = config.getoption(option_name)
         if option_value is not None:
             return [
@@ -60,41 +65,52 @@ def pytest_report_header(config):
 def pytest_collection_modifyitems(session, config, items):
     _validate_option_values(config)
 
-    for option_name, should_select in [("selectfromfile", True), ("deselectfromfile", False)]:
+    for option_name, should_select in [
+        ("selectfromfile", True),
+        ("deselectfromfile", False),
+    ]:
         selection_file_name = config.getoption(option_name)
         if selection_file_name is None:
             continue
 
         selection_file_path = Path(selection_file_name)
         with selection_file_path.open("rt", encoding="UTF-8") as selection_file:
-            test_names = {test_name.strip() for test_name in selection_file}
+            test_patterns = {
+                test_pattern.strip()
+                for test_pattern in selection_file
+                if not test_pattern.startswith("#")
+            }
 
-        seen_test_names = set()
+        test_patterns_that_matched = set()
         selected_items = []
         deselected_items = []
+
         for item in items:
-            if item.name in test_names or item.nodeid in test_names:
+            has_match = False
+            for test_pattern in test_patterns:
+                if fnmatch.fnmatch(item.nodeid, test_pattern) or item.name == test_pattern:
+                    test_patterns_that_matched.add(test_pattern)
+                    has_match = True
+
+            if has_match:
                 selected_items.append(item)
             else:
                 deselected_items.append(item)
-            seen_test_names.add(item.name)
-            seen_test_names.add(item.nodeid)
 
         if not should_select:
             # We are *de*selecting, flip collections
             selected_items, deselected_items = deselected_items, selected_items
 
-        missing_test_names = test_names - seen_test_names
-        if missing_test_names:
-            # If any items remain in `test_names` those tests either don't exist or
+        test_patterns_that_did_not_match = test_patterns - test_patterns_that_matched
+        if test_patterns_that_did_not_match:
+            # If any items remain in `test_patterns` those tests either don't exist or
             # have been deselected by another way - warn user
 
             message = (
-                f"pytest-select: Not all {'' if should_select else 'de'}selected tests exist "
-                f"(or have been {'de' if should_select else ''}selected otherwise).\n"
-                f"Missing {'' if should_select else 'de'}selected test names:\n  - "
+                f"pytest-select: Not all test patterns matched an actual test. "
+                f"The patterns without matching tests are:\n  - "
             )
-            message += "\n  - ".join(missing_test_names)
+            message += "\n  - ".join(test_patterns_that_did_not_match)
             if config.getoption("selectfailonmissing"):
                 raise UsageError(message)
             warnings.warn(message, PytestSelectWarning)
